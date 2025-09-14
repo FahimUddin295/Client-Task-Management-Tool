@@ -1,0 +1,167 @@
+function combineSheets() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var ui;
+    
+    // Try to get the UI, but don't fail if we can't (when running from trigger)
+    try {
+      ui = SpreadsheetApp.getUi();
+    } catch (e) {
+      ui = null;
+      Logger.log("Running in trigger mode - UI not available");
+    }
+
+    // 1. CONFIGURATION
+    var masterSheetName = "Master_Data";
+    var sheetsToSkip = ["Dashboard", "Summary", "Config"]; // Add your Top Sheet and others here
+
+    // 2. DEFINE YOUR MASTER COLUMN HEADERS
+    var masterHeaders = [
+      "Issue Rec. Date",
+      "Module Name",
+      "Page",
+      "Status (Imp)",
+      "Dev. Status",
+      "Developper name",
+      "Issue / Requirements Details",
+      "Dev. Dead Line",
+      "Priority",
+      "Feature/Bug",
+      "Task Start Date",
+      "Client",
+      "Task ID"
+    ];
+
+    sheetsToSkip.push(masterSheetName); // Always skip the master sheet itself
+
+    // 3. SETUP THE MASTER SHEET
+    var masterSheet = ss.getSheetByName(masterSheetName);
+    if (!masterSheet) {
+      masterSheet = ss.insertSheet(masterSheetName);
+      ss.setActiveSheet(masterSheet);
+      ss.moveActiveSheet(1);
+    } else {
+      masterSheet.clearContents();
+    }
+
+    // Write the master headers to the first row
+    masterSheet.getRange(1, 1, 1, masterHeaders.length).setValues([masterHeaders]).setFontWeight("bold").setBackground("#e6e6e6");
+
+    // 4. Get all sheets and filter out the ones we want to skip
+    var allSheets = ss.getSheets();
+    var sourceSheets = allSheets.filter(function(sheet) {
+      return (sheetsToSkip.indexOf(sheet.getName()) === -1);
+    });
+
+    if (sourceSheets.length === 0) {
+      if (ui) {
+        ui.alert("Error", "No source sheets found to combine.", ui.ButtonSet.OK);
+      } else {
+        Logger.log("Error: No source sheets found to combine.");
+        // Send email notification for trigger runs
+        MailApp.sendEmail(Session.getEffectiveUser().getEmail(), 
+                         "Script Error: No source sheets", 
+                         "The combineSheets script found no source sheets to process.");
+      }
+      return;
+    }
+
+    Logger.log("Processing " + sourceSheets.length + " sheets for columns: " + masterHeaders);
+    var totalRowsAdded = 0;
+
+    // 5. Loop through each source sheet
+    for (var i = 0; i < sourceSheets.length; i++) {
+      var currentSheet = sourceSheets[i];
+      Logger.log("Processing: " + currentSheet.getName());
+
+      var dataRange = currentSheet.getDataRange();
+      // CHANGE: Use getDisplayValues() to get data as text, ensuring consistency.
+      var data = dataRange.getDisplayValues(); // CHANGED FROM .getValues()
+      if (data.length === 0) {
+        Logger.log("  -> Skipped (no data)");
+        continue;
+      }
+
+      var sourceHeaders = data[0];
+      var columnMap = [];
+
+      // 6. Map Master Headers to Source Sheet Columns
+      for (var h = 0; h < masterHeaders.length; h++) {
+        var masterHeader = masterHeaders[h];
+        var columnIndex = sourceHeaders.findIndex(function(sourceHeader) {
+          return sourceHeader.toString().trim() === masterHeader.toString().trim();
+        });
+        columnMap.push(columnIndex);
+      }
+      Logger.log("  Column Map: " + columnMap);
+
+      // 7. Extract and Transform the Data based on the Map
+      var dataToAdd = [];
+
+      for (var r = 1; r < data.length; r++) {
+        var rowData = data[r];
+        var newRow = [];
+
+        for (var c = 0; c < columnMap.length; c++) {
+          var sourceColumnIndex = columnMap[c];
+          var cellValue = (sourceColumnIndex >= 0 && sourceColumnIndex < rowData.length) ? rowData[sourceColumnIndex] : null;
+          newRow.push(cellValue);
+        }
+        dataToAdd.push(newRow);
+      }
+
+      // 8. Add the transformed data to the master sheet
+      if (dataToAdd.length > 0) {
+        // CHANGE: getLastRow() + 1 is correct. This appends data.
+        masterSheet.getRange(masterSheet.getLastRow() + 1, 1, dataToAdd.length, masterHeaders.length).setValues(dataToAdd);
+        totalRowsAdded += dataToAdd.length;
+        Logger.log("  -> " + dataToAdd.length + " rows added");
+      } else {
+        Logger.log("  -> No data rows found");
+      }
+    }
+
+    // 9. Finalize
+    masterSheet.autoResizeColumns(1, masterHeaders.length);
+    
+    // Add a timestamp
+    var timestamp = new Date();
+    masterSheet.getRange("Z1").setValue("Last updated: " + timestamp.toLocaleString())
+      .setFontStyle("italic")
+      .setFontColor("#666666");
+    
+    // Success message
+    var successMsg = "Successfully processed " + sourceSheets.length + " sheets.\n" + 
+                     totalRowsAdded + " total rows added to '" + masterSheetName + "'.\n" +
+                     "Last updated: " + timestamp.toLocaleString();
+    
+    if (ui) {
+      ui.alert("Complete", successMsg, ui.ButtonSet.OK);
+    } else {
+      Logger.log(successMsg);
+    }
+
+  } catch (error) {
+    var errorMsg = "Script failed: " + error.message + "\nStack: " + error.stack;
+    Logger.log("Error: " + errorMsg);
+    
+    // Send email notification for errors in trigger mode
+    try {
+      MailApp.sendEmail(Session.getEffectiveUser().getEmail(), 
+                       "Script Error: combineSheets", 
+                       errorMsg);
+    } catch (emailError) {
+      Logger.log("Failed to send error email: " + emailError.message);
+    }
+    
+    // Only show UI alert if UI is available
+    try {
+      var ui = SpreadsheetApp.getUi();
+      if (ui) {
+        ui.alert("Error", "Script failed:\n" + error.message, ui.ButtonSet.OK);
+      }
+    } catch (uiError) {
+      Logger.log("UI not available for error display");
+    }
+  }
+}
